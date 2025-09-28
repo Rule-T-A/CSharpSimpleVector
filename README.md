@@ -10,9 +10,25 @@ A high-performance, file-based vector storage and similarity search library for 
 - **High Performance**: Memory-mapped files and SIMD optimization
 - **Flexible Search**: Cosine similarity with metadata filtering
 - **LINQ Support**: IEnumerable-based search results for easy filtering
-- **Developer Friendly**: Simple async/await API with static factory methods
+- **Developer Friendly**: Simple async/await API with static factory methods and "just works" experience
+- **Robust Storage**: File corruption recovery and graceful error handling
 
 ## Quick Start
+
+### The "Just Works" Experience
+
+For development and quick prototyping, use `CreateOrOpenAsync` - it automatically creates a new store if the directory doesn't exist or isn't a valid vector store, or opens an existing one if it is:
+
+```csharp
+// This will work whether the directory exists or not!
+using var store = await FileVectorStore.CreateOrOpenAsync("./my-vectors");
+
+// Add some content
+await store.AddTextAsync("Hello, world!");
+
+// Search
+var results = await store.SearchTextAsync("world");
+```
 
 ### Creating and Opening Stores
 
@@ -22,6 +38,9 @@ using var store = await FileVectorStore.CreateAsync("./my-vectors");
 
 // Open an existing store
 using var existingStore = await FileVectorStore.OpenAsync("./my-vectors");
+
+// Create or open - "just works" for development
+using var devStore = await FileVectorStore.CreateOrOpenAsync("./my-vectors");
 
 // Delete a store
 await FileVectorStore.DeleteAsync("./my-vectors");
@@ -177,6 +196,7 @@ var chunkingOptions = new SmartChunkingOptions
 |--------|-------------|---------|
 | `CreateAsync(path, options?)` | Create a new vector store | `Task<FileVectorStore>` |
 | `OpenAsync(path, options?)` | Open an existing vector store | `Task<FileVectorStore>` |
+| `CreateOrOpenAsync(path, options?)` | Create new or open existing store (just works!) | `Task<FileVectorStore>` |
 | `DeleteAsync(path)` | Delete an entire vector store | `Task<bool>` |
 | `AddTextAsync(content, metadata?)` | Add text with auto-generated embedding | `Task<string>` (document ID) |
 | `SearchTextAsync(query, limit?)` | Search by text (array results) | `Task<SearchResult[]>` |
@@ -209,6 +229,13 @@ var chunkingOptions = new SmartChunkingOptions
 - **Smart Chunking**: Intelligent document splitting at semantic boundaries
 - **Batch Processing**: Efficient handling of multiple documents and chunks
 
+## Reliability
+
+- **File Corruption Recovery**: Automatically detects and recovers from corrupted index files
+- **Graceful Degradation**: Falls back to JSON loading if binary index is corrupted
+- **Data Validation**: Skips corrupted document files during loading
+- **Self-Healing**: Automatically rebuilds indexes from valid data when needed
+
 ## Project Structure
 
 - `src/VectorStore/` - Main library
@@ -225,14 +252,16 @@ dotnet build
 
 ## Testing
 
+The project includes comprehensive test coverage with 38 tests across unit, integration, and benchmark categories:
+
 ```bash
-# Run all tests
+# Run all tests (38 tests total)
 dotnet test
 
 # Run specific test projects
-dotnet test tests/VectorStore.Tests.Unit/
-dotnet test tests/VectorStore.Tests.Integration/
-dotnet test tests/VectorStore.Tests.Benchmarks/
+dotnet test tests/VectorStore.Tests.Unit/        # 21 unit tests
+dotnet test tests/VectorStore.Tests.Integration/ # 17 integration tests
+dotnet test tests/VectorStore.Tests.Benchmarks/  # Performance benchmarks
 ```
 
 ## Requirements

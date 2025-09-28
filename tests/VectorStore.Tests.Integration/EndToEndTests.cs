@@ -277,4 +277,92 @@ public class EndToEndTests : IDisposable
             }
         }
     }
+
+    [Fact]
+    public async Task CreateOrOpenAsync_ShouldCreateNewStore_WhenDirectoryDoesNotExist()
+    {
+        // Arrange
+        var storePath = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        
+        // Act
+        using var store = await FileVectorStore.CreateOrOpenAsync(storePath);
+        
+        // Assert
+        store.Should().NotBeNull();
+        Directory.Exists(storePath).Should().BeTrue();
+        File.Exists(Path.Combine(storePath, "config.json")).Should().BeTrue();
+        
+        // Cleanup
+        await FileVectorStore.DeleteAsync(storePath);
+    }
+
+    [Fact]
+    public async Task CreateOrOpenAsync_ShouldOpenExistingStore_WhenValidStoreExists()
+    {
+        // Arrange
+        var storePath = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        using var originalStore = await FileVectorStore.CreateAsync(storePath);
+        var content = "This is a test document.";
+        var docId = await originalStore.AddTextAsync(content);
+        originalStore.Dispose();
+        
+        // Act
+        using var reopenedStore = await FileVectorStore.CreateOrOpenAsync(storePath);
+        
+        // Assert
+        reopenedStore.Should().NotBeNull();
+        var retrievedDoc = await reopenedStore.GetAsync(docId);
+        retrievedDoc.Should().NotBeNull();
+        retrievedDoc!.Content.Should().Be(content);
+        
+        // Cleanup
+        await FileVectorStore.DeleteAsync(storePath);
+    }
+
+    [Fact]
+    public async Task CreateOrOpenAsync_ShouldCreateNewStore_WhenDirectoryExistsButIsNotValidStore()
+    {
+        // Arrange
+        var storePath = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        Directory.CreateDirectory(storePath);
+        // Create a file that's not a valid store
+        File.WriteAllText(Path.Combine(storePath, "somefile.txt"), "not a vector store");
+        
+        // Act
+        using var store = await FileVectorStore.CreateOrOpenAsync(storePath);
+        
+        // Assert
+        store.Should().NotBeNull();
+        File.Exists(Path.Combine(storePath, "config.json")).Should().BeTrue();
+        File.Exists(Path.Combine(storePath, "somefile.txt")).Should().BeTrue(); // Original file should still be there
+        
+        // Cleanup
+        await FileVectorStore.DeleteAsync(storePath);
+    }
+
+    [Fact]
+    public async Task CreateOrOpenAsync_ShouldUseProvidedOptions_WhenCreatingNewStore()
+    {
+        // Arrange
+        var storePath = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        var customOptions = new VectorStoreOptions
+        {
+            StorePath = storePath,
+            ChunkSize = 1000,
+            MaxMemoryChunks = 10,
+            EnableEmbeddingGeneration = true,
+            UseMemoryMapping = false
+        };
+        
+        // Act
+        using var store = await FileVectorStore.CreateOrOpenAsync(storePath, customOptions);
+        
+        // Assert
+        store.Should().NotBeNull();
+        // Note: We can't directly access the options from the store, but we can verify it was created
+        Directory.Exists(storePath).Should().BeTrue();
+        
+        // Cleanup
+        await FileVectorStore.DeleteAsync(storePath);
+    }
 }

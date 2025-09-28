@@ -83,13 +83,27 @@ public class FileVectorStore : IVectorStore
         var store = new FileVectorStore(resolvedOptions, logger);
         await store.LoadIndexAsync();
 
-        // Verify we loaded some data
+        // Check if this is an empty directory - if so, treat it as a new store
         if (store._vectorIndex.Count == 0)
         {
             var hasJsonFiles = Directory.GetFiles(storePath, "*.json").Length > 0;
-            if (!hasJsonFiles)
+            var hasConfigFile = File.Exists(Path.Combine(storePath, "config.json"));
+            
+            if (!hasJsonFiles && !hasConfigFile)
             {
-                throw new InvalidOperationException($"Directory '{storePath}' exists but contains no vector store data. Use CreateAsync() to create a new store.");
+                // Empty directory - create a new store
+                logger?.LogInformation("Empty directory detected, creating new vector store at {StorePath}", storePath);
+                await store.InitializeNewStoreAsync();
+            }
+            else if (!hasJsonFiles && hasConfigFile)
+            {
+                // Has config but no documents - this is valid (empty store)
+                logger?.LogInformation("Opened empty vector store at {StorePath}", storePath);
+            }
+            else
+            {
+                // Has JSON files but couldn't load them - corruption recovery handled in LoadIndexAsync
+                logger?.LogInformation("Opened vector store at {StorePath} with {Count} documents (recovered from corruption)", storePath, store._vectorIndex.Count);
             }
         }
 
@@ -98,12 +112,68 @@ public class FileVectorStore : IVectorStore
     }
 
     /// <summary>
+    /// Creates a new vector store or opens an existing one if it exists and is valid.
+    /// This provides a "just works" experience for local development.
+    /// </summary>
+    /// <param name="storePath">The directory path for the vector store</param>
+    /// <param name="options">Optional configuration options (uses sensible defaults if not provided)</param>
+    /// <param name="logger">Optional logger</param>
+    /// <returns>A vector store instance</returns>
+    public static async Task<FileVectorStore> CreateOrOpenAsync(string storePath, VectorStoreOptions? options = null, ILogger<FileVectorStore>? logger = null)
+    {
+        if (string.IsNullOrWhiteSpace(storePath))
+            throw new ArgumentException("Store path cannot be null or empty", nameof(storePath));
+
+        if (Directory.Exists(storePath) && HasValidStore(storePath))
+        {
+            logger?.LogInformation("Opening existing vector store at {StorePath}", storePath);
+            return await OpenAsync(storePath, options, logger);
+        }
+
+        // Create with sensible defaults for local dev use
+        var defaultOptions = options ?? new VectorStoreOptions
+        {
+            StorePath = storePath,
+            ChunkSize = 500,        // Smaller for dev tools
+            MaxMemoryChunks = 5,    // Conservative memory usage
+            EnableEmbeddingGeneration = true,
+            UseMemoryMapping = true
+        };
+
+        logger?.LogInformation("Creating new vector store at {StorePath}", storePath);
+        
+        // If directory exists but is not a valid store, we need to create a new store
+        // We'll use the same logic as CreateAsync but without the directory existence check
+        var store = new FileVectorStore(defaultOptions, logger);
+        await store.InitializeNewStoreAsync();
+        return store;
+    }
+
+    /// <summary>
+    /// Checks if a directory contains a valid vector store without throwing exceptions.
+    /// </summary>
+    /// <param name="path">The directory path to check</param>
+    /// <returns>True if the directory contains a valid vector store</returns>
+    private static bool HasValidStore(string path)
+    {
+        try
+        {
+            // Quick validation without throwing exceptions
+            return File.Exists(Path.Combine(path, "config.json"));
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Deletes a vector store and all its data.
     /// </summary>
     /// <param name="storePath">The directory path for the vector store</param>
     /// <param name="logger">Optional logger</param>
     /// <returns>True if the store was deleted, false if it didn't exist</returns>
-    public static async Task<bool> DeleteAsync(string storePath, ILogger<FileVectorStore>? logger = null)
+    public static Task<bool> DeleteAsync(string storePath, ILogger<FileVectorStore>? logger = null)
     {
         if (string.IsNullOrWhiteSpace(storePath))
             throw new ArgumentException("Store path cannot be null or empty", nameof(storePath));
@@ -111,7 +181,7 @@ public class FileVectorStore : IVectorStore
         if (!Directory.Exists(storePath))
         {
             logger?.LogWarning("Vector store directory '{StorePath}' does not exist", storePath);
-            return false;
+            return Task.FromResult(false);
         }
 
         try
@@ -123,14 +193,14 @@ public class FileVectorStore : IVectorStore
             if (!hasJsonFiles && !hasIndexFile)
             {
                 logger?.LogWarning("Directory '{StorePath}' exists but is not a vector store", storePath);
-                return false;
+                return Task.FromResult(false);
             }
 
             // Delete the entire directory
             Directory.Delete(storePath, true);
             
             logger?.LogInformation("Successfully deleted vector store at {StorePath}", storePath);
-            return true;
+            return Task.FromResult(true);
         }
         catch (Exception ex)
         {
@@ -167,13 +237,42 @@ public class FileVectorStore : IVectorStore
         _logger?.LogDebug("Vector index loaded with {Count} vectors", _vectorIndex.Count);
     }
 
-    public async Task<string> AddAsync(VectorDocument document)
+    /// <summary>
+    /// Initializes a new store by creating the necessary directories and config file.
+    /// </summary>
+    private async Task InitializeNewStoreAsync()
     {
-        // Ensure store directory exists
+        // Create the store directory
         Directory.CreateDirectory(_options.StorePath);
         
-        // Save document to JSON file
-        var documentPath = Path.Combine(_options.StorePath, $"{document.Id}.json");
+        // Create the documents subdirectory
+        Directory.CreateDirectory(Path.Combine(_options.StorePath, "documents"));
+        
+        // Create a basic config file
+        var configPath = Path.Combine(_options.StorePath, "config.json");
+        var config = new
+        {
+            StorePath = _options.StorePath,
+            ChunkSize = _options.ChunkSize,
+            MaxMemoryChunks = _options.MaxMemoryChunks,
+            EnableEmbeddingGeneration = _options.EnableEmbeddingGeneration,
+            UseMemoryMapping = _options.UseMemoryMapping
+        };
+        
+        var configJson = JsonSerializer.Serialize(config, new JsonSerializerOptions { WriteIndented = true });
+        await File.WriteAllTextAsync(configPath, configJson);
+        
+        _logger?.LogDebug("Initialized new vector store at {StorePath}", _options.StorePath);
+    }
+
+    public async Task<string> AddAsync(VectorDocument document)
+    {
+        // Ensure store directory and documents subdirectory exist
+        Directory.CreateDirectory(_options.StorePath);
+        Directory.CreateDirectory(Path.Combine(_options.StorePath, "documents"));
+        
+        // Save document to JSON file in documents subdirectory
+        var documentPath = Path.Combine(_options.StorePath, "documents", $"{document.Id}.json");
         var json = JsonSerializer.Serialize(document, new JsonSerializerOptions { WriteIndented = true });
         await File.WriteAllTextAsync(documentPath, json);
         
@@ -197,7 +296,7 @@ public class FileVectorStore : IVectorStore
 
     public Task<bool> DeleteAsync(string id)
     {
-        var documentPath = Path.Combine(_options.StorePath, $"{id}.json");
+        var documentPath = Path.Combine(_options.StorePath, "documents", $"{id}.json");
         
         if (!File.Exists(documentPath))
         {
@@ -236,7 +335,7 @@ public class FileVectorStore : IVectorStore
         }
         
         // Fallback to direct file access
-        var documentPath = Path.Combine(_options.StorePath, $"{id}.json");
+        var documentPath = Path.Combine(_options.StorePath, "documents", $"{id}.json");
         
         if (!File.Exists(documentPath))
         {

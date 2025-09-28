@@ -86,30 +86,69 @@ public class VectorIndex
 
         // Fallback to loading from JSON files
         Console.WriteLine("Loading vector index from JSON files...");
-        var documentFiles = Directory.GetFiles(_storePath, "*.json");
+        await LoadFromJsonFilesAsync();
+
+        // Save the loaded index to binary for next time
+        await SaveToBinaryIndexAsync();
+    }
+
+    /// <summary>
+    /// Loads vectors from JSON files with corruption recovery.
+    /// </summary>
+    private async Task LoadFromJsonFilesAsync()
+    {
+        // Look for JSON files in both the root directory and documents subdirectory
+        var rootJsonFiles = Directory.GetFiles(_storePath, "*.json");
+        var documentsPath = Path.Combine(_storePath, "documents");
+        var documentJsonFiles = Directory.Exists(documentsPath) ? Directory.GetFiles(documentsPath, "*.json") : Array.Empty<string>();
+        
+        var documentFiles = rootJsonFiles.Concat(documentJsonFiles).ToArray();
+        var loadedCount = 0;
+        var corruptedCount = 0;
         
         foreach (var filePath in documentFiles)
         {
             try
             {
                 var json = await File.ReadAllTextAsync(filePath);
+                
+                // Validate JSON is not empty or partial
+                if (string.IsNullOrWhiteSpace(json) || !json.Trim().StartsWith("{") || !json.Trim().EndsWith("}"))
+                {
+                    Console.WriteLine($"Warning: Skipping partial/corrupted file: {filePath}");
+                    corruptedCount++;
+                    continue;
+                }
+                
                 var document = JsonSerializer.Deserialize<VectorDocument>(json);
                 
                 if (document?.Embedding != null && document.Embedding.Length > 0)
                 {
                     var id = Path.GetFileNameWithoutExtension(filePath);
                     AddVector(id, document.Embedding, filePath);
+                    loadedCount++;
                 }
+                else
+                {
+                    Console.WriteLine($"Warning: Document {filePath} has no valid embedding, skipping");
+                    corruptedCount++;
+                }
+            }
+            catch (JsonException ex)
+            {
+                // Handle JSON parsing errors (corrupted files)
+                Console.WriteLine($"Warning: Corrupted JSON file {filePath}: {ex.Message}");
+                corruptedCount++;
             }
             catch (Exception ex)
             {
-                // Log error but continue loading other files
+                // Handle other file errors
                 Console.WriteLine($"Warning: Failed to load vector from {filePath}: {ex.Message}");
+                corruptedCount++;
             }
         }
-
-        // Save the loaded index to binary for next time
-        await SaveToBinaryIndexAsync();
+        
+        Console.WriteLine($"✓ Loaded {loadedCount} vectors from JSON files (skipped {corruptedCount} corrupted files)");
     }
 
     /// <summary>
